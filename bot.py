@@ -439,7 +439,37 @@ async def admin_unban(message: Message):
 
 @router.message(Command("id"))
 async def show_id(message: Message):
-    await message.answer(f"Твой Telegram ID: <code>{message.from_user.id}</code>\nНе публикуй его в открытом доступе.")
+    args = message.text.split(maxsplit=1)
+    
+    # Если написали просто /id - показываем свои данные
+    if len(args) == 1:
+        username = message.from_user.username or "нет @username"
+        await message.answer(
+            f"👤 <b>Твои данные:</b>\n"
+            f"🆔 ID: <code>{message.from_user.id}</code>\n"
+            f"🔗 Юзернейм: @{username if username != 'нет @username' else 'нет'}\n\n"
+            f"<i>Не публикуй ID в открытом доступе.</i>"
+        )
+        return
+
+    # Если написали /id ник - ищем в базе
+    query = args[1].strip()
+    with connect() as con:
+        # Ищем по никнейму в анкетах
+        rows = con.execute(
+            "SELECT telegram_id, nickname FROM profiles WHERE lower(nickname) LIKE lower(?) LIMIT 5", 
+            (f"%{query}%",)
+        ).fetchall()
+        
+    if not rows:
+        await message.answer(f"❌ Никого с ником «{escape(query)}» не найдено.")
+        return
+        
+    lines = [f"🔎 <b>Результаты поиска по нику «{escape(query)}»:</b>\n"]
+    for r in rows:
+        lines.append(f"🐾 <b>{escape(r['nickname'])}</b> — ID: <code>{r['telegram_id']}</code>")
+        
+    await message.answer("\n".join(lines))
 
 
 @router.callback_query(F.data == "home")
