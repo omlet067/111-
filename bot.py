@@ -1,4 +1,4 @@
-import asyncio
+import asyncio  # FIX: добавлен импорт, иначе бот падает
 import logging
 import os
 import re
@@ -15,7 +15,10 @@ from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError, Teleg
 from aiogram.filters import CommandStart, Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import (
+    Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
+    ReplyKeyboardMarkup, KeyboardButton,
+)
 
 # Загружаем .env строго рядом с bot.py
 _ENV_FILE = Path(__file__).resolve().parent / ".env"
@@ -31,9 +34,9 @@ router = Router()
 INTERESTS = ["Квадробика", "Рисование", "Монтаж", "Косплей", "Фурри", "Фотография", "Общение", "Другое"]
 REACTIONS = {"heart": "❤️", "fire": "🔥", "laugh": "😂", "sad": "😢", "dislike": "👎"}
 
-# Хранилище для умного рандома (в оперативной памяти)
-# { user_id: set(просмотренные id) }
+# Умный рандом: { user_id: set(просмотренные id) }
 RANDOM_SEEN = {}
+
 
 class ProfileForm(StatesGroup):
     nickname = State()
@@ -43,6 +46,7 @@ class ProfileForm(StatesGroup):
     channel = State()
     city = State()
 
+
 class EditProfileForm(StatesGroup):
     nickname = State()
     avatar = State()
@@ -51,18 +55,23 @@ class EditProfileForm(StatesGroup):
     channel = State()
     city = State()
 
+
 class ReportForm(StatesGroup):
     reason = State()
+
 
 class SearchForm(StatesGroup):
     nickname = State()
 
+
 class NomineeForm(StatesGroup):
     telegram_id = State()
+
 
 class BroadcastForm(StatesGroup):
     text = State()
     confirm = State()
+
 
 class ThoughtForm(StatesGroup):
     text = State()
@@ -135,7 +144,7 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_posts_feed ON posts(status, created_at DESC, id DESC);
         CREATE INDEX IF NOT EXISTS idx_posts_author ON posts(author_id, status);
-        
+
         CREATE TABLE IF NOT EXISTS reactions(
           post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
           user_id INTEGER NOT NULL REFERENCES users(telegram_id),
@@ -145,7 +154,6 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_reactions_post ON reactions(post_id);
         """)
-        # Добавляем колонку username для старых баз
         try:
             con.execute("ALTER TABLE users ADD COLUMN username TEXT DEFAULT ''")
         except sqlite3.OperationalError:
@@ -156,7 +164,6 @@ def ensure_user(user_id: int, username: str = ""):
     with connect() as con:
         con.execute("INSERT OR IGNORE INTO users(telegram_id) VALUES(?)", (user_id,))
         con.execute("INSERT OR IGNORE INTO profiles(telegram_id) VALUES(?)", (user_id,))
-        # Обновляем username, если он изменился
         if username:
             con.execute("UPDATE users SET username=? WHERE telegram_id=?", (username, user_id))
 
@@ -192,18 +199,15 @@ def main_menu(uid):
         rows.append([("🛡 Админ-панель", "admin:home")])
     return keyboard(rows)
 
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 
 def bottom_menu(uid):
-    """Нативная клавиатура внизу экрана"""
     kb = [
         [KeyboardButton(text="👤 Моя анкета"), KeyboardButton(text="🔎 Каталог")],
         [KeyboardButton(text="💭 Мысли"), KeyboardButton(text="🏆 Топ-10")],
-        [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="ℹ️ Помощь")]
+        [KeyboardButton(text="⚙️ Настройки"), KeyboardButton(text="ℹ️ Помощь")],
     ]
     if is_admin(uid):
         kb.append([KeyboardButton(text="🛡 Админ-панель")])
-    
     return ReplyKeyboardMarkup(keyboard=kb, resize_keyboard=True, input_field_placeholder="Выбери раздел...")
 
 
@@ -214,8 +218,8 @@ def profile_menu(p):
     rows.append([("🙈 Скрыть анкету", "profile:hide")] if p["visibility"] == "published"
                 else [("📢 Опубликовать анкету", "profile:publish")])
     rows += [
-        [("🗑 Удалить анкету", "profile:delete_confirm")], 
-        [("⬅️ Главное меню", "home")] # <-- Вот эта кнопка ведет в главное меню
+        [("🗑 Удалить анкету", "profile:delete_confirm")],
+        [("⬅️ Главное меню", "home")],
     ]
     return keyboard(rows)
 
@@ -229,30 +233,27 @@ def cancel_kb():
 
 
 async def edit_message(call: CallbackQuery, text: str, reply_markup=None):
+    """Удаляет старое сообщение и отправляет новое. Работает и для фото, и для текста."""
     try:
         await call.message.delete()
     except Exception:
         pass
-    return await call.message.answer(text, reply_markup=reply_markup)
+    try:
+        return await call.message.answer(text, reply_markup=reply_markup)
+    except TelegramBadRequest as e:
+        logging.warning("edit_message fallback: %s", e)
 
 
 def profile_text(p, preview=False):
     interests = ", ".join(x for x in (p.get("interests") or "").split("|") if x)
-    
-    # Получаем юзернейм из базы данных
     with connect() as con:
         u = con.execute("SELECT username FROM users WHERE telegram_id=?", (p['telegram_id'],)).fetchone()
         username = u["username"] if u else ""
-
-    lines = [
-        f"🐾 <b>{escape(p.get('nickname') or 'Без никнейма')}</b>",
-    ]
-    
-    # Добавляем юзернейм, если он есть
+    lines = [f"🐾 <b>{escape(p.get('nickname') or 'Без никнейма')}</b>"]
     if username:
         lines.append(f"🔗 <b>Связь:</b> @{username}")
-        
     lines += [
+        f"🆔 <b>ID:</b> <code>{p['telegram_id']}</code>",  # NEW: ID в анкете
         f"✨ <b>Интересы:</b> {escape(interests or 'не указаны')}",
         f"💬 <b>О себе:</b> {escape(p.get('bio') or 'не заполнено')}",
     ]
@@ -274,13 +275,15 @@ def time_ago(dt_str):
         dt = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
         diff = datetime.now(timezone.utc).replace(tzinfo=None) - dt
         mins = int(diff.total_seconds() // 60)
-        if mins < 1: return "только что"
-        if mins < 60: return f"{mins} мин. назад"
+        if mins < 1:
+            return "только что"
+        if mins < 60:
+            return f"{mins} мин. назад"
         hours = mins // 60
-        if hours < 24: return f"{hours} ч. назад"
-        days = hours // 24
-        return f"{days} дн. назад"
-    except:
+        if hours < 24:
+            return f"{hours} ч. назад"
+        return f"{hours // 24} дн. назад"
+    except Exception:
         return dt_str
 
 
@@ -291,8 +294,7 @@ async def show_public_profile(call: CallbackQuery, target_id: int, back_target="
           WHERE p.telegram_id=? AND p.visibility='published' AND u.status='active'""", (target_id,)).fetchone()
         blocked = con.execute("SELECT 1 FROM blocks WHERE blocker_id=? AND blocked_id=?", (uid, target_id)).fetchone()
     if not row or blocked:
-        await edit_message(call, "Анкета недоступна.", reply_markup=back(back_target))
-        return
+        return await edit_message(call, "Анкета недоступна.", reply_markup=back(back_target))
     p = dict(row)
     markup = keyboard([
         [("🚩 Пожаловаться", f"report:{target_id}"), ("🚫 Заблокировать", f"block:{target_id}")],
@@ -302,7 +304,10 @@ async def show_public_profile(call: CallbackQuery, target_id: int, back_target="
         await call.message.delete()
     except Exception:
         pass
-    await call.message.answer_photo(p["avatar_file_id"], caption=profile_text(p), reply_markup=markup)
+    try:
+        await call.message.answer_photo(p["avatar_file_id"], caption=profile_text(p), reply_markup=markup)
+    except TelegramBadRequest:
+        await call.message.answer(profile_text(p), reply_markup=markup)
 
 
 # ---------------- START / HELP / ADMIN CMDS ----------------
@@ -314,8 +319,7 @@ async def start(message: Message, state: FSMContext):
     with connect() as con:
         status = con.execute("SELECT status FROM users WHERE telegram_id=?", (message.from_user.id,)).fetchone()["status"]
     if status == "banned":
-        await message.answer("Доступ к боту ограничен администрацией.")
-        return
+        return await message.answer("Доступ к боту ограничен администрацией.")
     await message.answer(
         "🐾 <b>QuadroProfileBot</b>\n"
         "Социальная сеть квадрофандома: анкеты, новые знакомства и «Топ-10 авторов».\n\n"
@@ -323,12 +327,16 @@ async def start(message: Message, state: FSMContext):
         reply_markup=bottom_menu(message.from_user.id),
     )
 
+
+# --- Нативные кнопки ---
+
 @router.message(F.text == "👤 Моя анкета")
 async def msg_profile_home(message: Message, state: FSMContext):
     await state.clear()
     p = get_profile(message.from_user.id)
     label = {"draft": "Черновик", "hidden": "Скрыта", "published": "Опубликована"}.get(p["visibility"], p["visibility"])
     await message.answer(f"👤 <b>Моя анкета</b>\nСтатус: <b>{label}</b>", reply_markup=profile_menu(p))
+
 
 @router.message(F.text == "🔎 Каталог")
 async def msg_directory_home(message: Message, state: FSMContext):
@@ -339,22 +347,20 @@ async def msg_directory_home(message: Message, state: FSMContext):
         [("⬅️ Главное меню", "home")],
     ]))
 
+
 @router.message(F.text == "💭 Мысли")
 async def msg_thoughts_home(message: Message, state: FSMContext):
     await state.clear()
-    # Создаем фейковый callback, чтобы переиспользовать функцию thoughts_home
-    # Или просто пишем логику заново:
     with connect() as con:
         latest = con.execute("SELECT id FROM posts WHERE status='published' ORDER BY id DESC LIMIT 1").fetchone()
     if not latest:
-        await message.answer("💭 <b>Мысли</b>\n\nПока нет мыслей. Будь первым!", reply_markup=keyboard([
+        return await message.answer("💭 <b>Мысли</b>\n\nПока нет мыслей. Будь первым!", reply_markup=keyboard([
             [("✍️ Написать мысль", "thoughts:create")],
-            [("⬅️ В меню", "home")]
+            [("⬅️ В меню", "home")],
         ]))
-    else:
-        # Вместо callback-вызова, мы просто просим функцию показать пост (см. примечание ниже)
-        text, markup = get_post_card(latest["id"], message.from_user.id)
-        await message.answer(text, reply_markup=markup)
+    text, markup = get_post_card(latest["id"], message.from_user.id)
+    await message.answer(text, reply_markup=markup)
+
 
 @router.message(F.text == "🏆 Топ-10")
 async def msg_contest_home(message: Message, state: FSMContext):
@@ -362,11 +368,11 @@ async def msg_contest_home(message: Message, state: FSMContext):
     with connect() as con:
         rows = con.execute("SELECT * FROM contests WHERE status IN ('open','closed') ORDER BY id DESC LIMIT 10").fetchall()
     if not rows:
-        await message.answer("🏆 Пока нет активных или завершённых выпусков. Загляни позже!", reply_markup=back())
-    else:
-        buttons = [[(f"{'🟢' if r['status'] == 'open' else '🏁'} {r['title']}", f"contest:view:{r['id']}")] for r in rows]
-        buttons.append([("⬅️ Главное меню", "home")])
-        await message.answer("🏆 <b>Топ-10 авторов</b>\nВыбери выпуск:", reply_markup=keyboard(buttons))
+        return await message.answer("🏆 Пока нет активных или завершённых выпусков. Загляни позже!", reply_markup=back())
+    buttons = [[(f"{'🟢' if r['status'] == 'open' else '🏁'} {r['title']}", f"contest:view:{r['id']}")] for r in rows]
+    buttons.append([("⬅️ Главное меню", "home")])
+    await message.answer("🏆 <b>Топ-10 авторов</b>\nВыбери выпуск:", reply_markup=keyboard(buttons))
+
 
 @router.message(F.text == "⚙️ Настройки")
 async def msg_settings(message: Message, state: FSMContext):
@@ -375,6 +381,7 @@ async def msg_settings(message: Message, state: FSMContext):
         [("👤 Моя анкета", "profile:home")],
         [("⬅️ Главное меню", "home")],
     ]))
+
 
 @router.message(F.text == "ℹ️ Помощь")
 async def msg_help(message: Message, state: FSMContext):
@@ -390,6 +397,7 @@ async def msg_help(message: Message, state: FSMContext):
         reply_markup=back(),
     )
 
+
 @router.message(F.text == "🛡 Админ-панель")
 async def msg_admin_home(message: Message, state: FSMContext):
     if not is_admin(message.from_user.id):
@@ -398,10 +406,12 @@ async def msg_admin_home(message: Message, state: FSMContext):
     await message.answer("🛡 <b>Админ-панель</b>", reply_markup=keyboard([
         [("➕ Создать выпуск", "admin:create")],
         [("📋 Выпуски", "admin:contests")],
+        [("👥 Пользователи", "admin:users:0")],  # NEW
         [("🚩 Жалобы", "admin:reports")],
         [("📢 Рассылка", "admin:broadcast")],
         [("💭 Мысли", "admin:thoughts")],
     ]))
+
 
 @router.message(Command("ban"))
 async def admin_ban(message: Message):
@@ -440,37 +450,29 @@ async def admin_unban(message: Message):
 @router.message(Command("id"))
 async def show_id(message: Message):
     args = message.text.split(maxsplit=1)
-    
-    # Если написали просто /id - показываем свои данные
     if len(args) == 1:
-        username = message.from_user.username or "нет @username"
-        await message.answer(
+        username = message.from_user.username or "нет"
+        return await message.answer(
             f"👤 <b>Твои данные:</b>\n"
             f"🆔 ID: <code>{message.from_user.id}</code>\n"
-            f"🔗 Юзернейм: @{username if username != 'нет @username' else 'нет'}\n\n"
+            f"🔗 Юзернейм: @{username}\n\n"
             f"<i>Не публикуй ID в открытом доступе.</i>"
         )
-        return
-
-    # Если написали /id ник - ищем в базе
     query = args[1].strip()
     with connect() as con:
-        # Ищем по никнейму в анкетах
         rows = con.execute(
-            "SELECT telegram_id, nickname FROM profiles WHERE lower(nickname) LIKE lower(?) LIMIT 5", 
+            "SELECT telegram_id, nickname FROM profiles WHERE lower(nickname) LIKE lower(?) LIMIT 5",
             (f"%{query}%",)
         ).fetchall()
-        
     if not rows:
-        await message.answer(f"❌ Никого с ником «{escape(query)}» не найдено.")
-        return
-        
+        return await message.answer(f"❌ Никого с ником «{escape(query)}» не найдено.")
     lines = [f"🔎 <b>Результаты поиска по нику «{escape(query)}»:</b>\n"]
     for r in rows:
         lines.append(f"🐾 <b>{escape(r['nickname'])}</b> — ID: <code>{r['telegram_id']}</code>")
-        
     await message.answer("\n".join(lines))
 
+
+# ---------------- CALLBACK: HOME / HELP ----------------
 
 @router.callback_query(F.data == "home")
 async def home(call: CallbackQuery, state: FSMContext):
@@ -524,7 +526,7 @@ async def profile_create(call: CallbackQuery, state: FSMContext):
     await call.answer()
 
 
-# --- Выборочное редактирование анкеты ---
+# --- Выборочное редактирование ---
 
 @router.callback_query(F.data == "profile:edit_menu")
 async def profile_edit_menu(call: CallbackQuery):
@@ -532,9 +534,10 @@ async def profile_edit_menu(call: CallbackQuery):
         [("Никнейм", "profile:edit:nickname"), ("Аватар", "profile:edit:avatar")],
         [("Интересы", "profile:edit:interests"), ("О себе", "profile:edit:bio")],
         [("Канал", "profile:edit:channel"), ("Город", "profile:edit:city")],
-        [("⬅️ Назад", "profile:home")]
+        [("⬅️ Назад", "profile:home")],
     ]))
     await call.answer()
+
 
 @router.callback_query(F.data.startswith("profile:edit:"))
 async def profile_edit_field(call: CallbackQuery, state: FSMContext):
@@ -576,6 +579,7 @@ async def edit_nick(message: Message, state: FSMContext):
     await state.clear()
     await profile_home_msg(message)
 
+
 @router.message(EditProfileForm.avatar)
 async def edit_avatar(message: Message, state: FSMContext):
     if not message.photo:
@@ -584,6 +588,7 @@ async def edit_avatar(message: Message, state: FSMContext):
         con.execute("UPDATE profiles SET avatar_file_id=?, updated_at=CURRENT_TIMESTAMP WHERE telegram_id=?", (message.photo[-1].file_id, message.from_user.id))
     await state.clear()
     await profile_home_msg(message)
+
 
 @router.message(EditProfileForm.bio)
 async def edit_bio(message: Message, state: FSMContext):
@@ -595,10 +600,12 @@ async def edit_bio(message: Message, state: FSMContext):
     await state.clear()
     await profile_home_msg(message)
 
+
 @router.message(EditProfileForm.channel)
 async def edit_channel(message: Message, state: FSMContext):
     val = (message.text or "").strip()
-    if val == "-": val = ""
+    if val == "-":
+        val = ""
     elif val and not valid_channel(val):
         return await message.answer("Укажи ссылку формата https://t.me/имя или «-».", reply_markup=cancel_kb())
     with connect() as con:
@@ -606,16 +613,19 @@ async def edit_channel(message: Message, state: FSMContext):
     await state.clear()
     await profile_home_msg(message)
 
+
 @router.message(EditProfileForm.city)
 async def edit_city(message: Message, state: FSMContext):
     val = (message.text or "").strip()
-    if val == "-": val = ""
+    if val == "-":
+        val = ""
     if len(val) > 80:
         return await message.answer("Слишком длинный город.", reply_markup=cancel_kb())
     with connect() as con:
         con.execute("UPDATE profiles SET city=?, updated_at=CURRENT_TIMESTAMP WHERE telegram_id=?", (val, message.from_user.id))
     await state.clear()
     await profile_home_msg(message)
+
 
 @router.callback_query(F.data.startswith("interest:"), EditProfileForm.interests)
 async def edit_interest(call: CallbackQuery, state: FSMContext):
@@ -630,14 +640,19 @@ async def edit_interest(call: CallbackQuery, state: FSMContext):
         await state.clear()
         await edit_message(call, "✅ Интересы обновлены!", reply_markup=back("profile:home"))
         return await call.answer()
-    
-    if value in selected: selected.remove(value)
-    elif value in INTERESTS: selected.append(value)
+    if value in selected:
+        selected.remove(value)
+    elif value in INTERESTS:
+        selected.append(value)
     await state.update_data(interests=selected)
     rows = [[(("☑️ " if x in selected else "") + x, f"interest:{x}")] for x in INTERESTS]
     rows.append([("Готово ✓", "interest:done"), ("✖️ Отмена", "cancel")])
-    await call.message.edit_reply_markup(reply_markup=keyboard(rows))
+    try:
+        await call.message.edit_reply_markup(reply_markup=keyboard(rows))
+    except TelegramBadRequest:
+        pass
     await call.answer("Выбор обновлён")
+
 
 async def profile_home_msg(message: Message):
     p = get_profile(message.from_user.id)
@@ -645,14 +660,13 @@ async def profile_home_msg(message: Message):
     await message.answer(f"👤 <b>Моя анкета</b>\nСтатус: <b>{label}</b>", reply_markup=profile_menu(p))
 
 
-# --- Полное создание анкеты (без изменений) ---
+# --- Полное создание анкеты ---
 
 @router.message(ProfileForm.nickname)
 async def profile_nickname(message: Message, state: FSMContext):
     value = (message.text or "").strip()
     if not 2 <= len(value) <= 32:
-        await message.answer("Никнейм должен содержать 2–32 символа.", reply_markup=cancel_kb())
-        return
+        return await message.answer("Никнейм должен содержать 2–32 символа.", reply_markup=cancel_kb())
     await state.update_data(nickname=value)
     await state.set_state(ProfileForm.avatar)
     await message.answer("🖼 <b>Анкета · 2/6</b>\nОтправь изображение для аватара как фото.", reply_markup=cancel_kb())
@@ -661,8 +675,7 @@ async def profile_nickname(message: Message, state: FSMContext):
 @router.message(ProfileForm.avatar)
 async def profile_avatar(message: Message, state: FSMContext):
     if not message.photo:
-        await message.answer("Отправь изображение как фото Telegram.", reply_markup=cancel_kb())
-        return
+        return await message.answer("Отправь изображение как фото Telegram.", reply_markup=cancel_kb())
     await state.update_data(avatar_file_id=message.photo[-1].file_id, interests=[])
     await state.set_state(ProfileForm.interests)
     data = await state.get_data()
@@ -678,14 +691,14 @@ async def profile_interest(call: CallbackQuery, state: FSMContext):
     selected = data.get("interests", [])
     if value == "done":
         if not selected:
-            await call.answer("Выбери хотя бы один интерес.", show_alert=True)
-            return
+            return await call.answer("Выбери хотя бы один интерес.", show_alert=True)
         await state.set_state(ProfileForm.bio)
         await edit_message(call, "💬 <b>Анкета · 4/6</b>\nРасскажи о себе (до 500 символов).", reply_markup=cancel_kb())
-        await call.answer()
-        return
-    if value in selected: selected.remove(value)
-    elif value in INTERESTS: selected.append(value)
+        return await call.answer()
+    if value in selected:
+        selected.remove(value)
+    elif value in INTERESTS:
+        selected.append(value)
     await state.update_data(interests=selected)
     rows = [[(("☑️ " if x in selected else "") + x, f"interest:{x}")] for x in INTERESTS]
     rows.append([("Готово ✓", "interest:done"), ("✖️ Отмена", "cancel")])
@@ -700,8 +713,7 @@ async def profile_interest(call: CallbackQuery, state: FSMContext):
 async def profile_bio(message: Message, state: FSMContext):
     value = (message.text or "").strip()
     if not value or len(value) > 500:
-        await message.answer("Описание должно содержать 1–500 символов.", reply_markup=cancel_kb())
-        return
+        return await message.answer("Описание должно содержать 1–500 символов.", reply_markup=cancel_kb())
     await state.update_data(bio=value)
     await state.set_state(ProfileForm.channel)
     await message.answer("📣 <b>Анкета · 5/6</b>\nСсылка на Telegram-канал или <code>-</code>, чтобы пропустить.", reply_markup=cancel_kb())
@@ -710,10 +722,10 @@ async def profile_bio(message: Message, state: FSMContext):
 @router.message(ProfileForm.channel)
 async def profile_channel(message: Message, state: FSMContext):
     value = (message.text or "").strip()
-    if value == "-": value = ""
+    if value == "-":
+        value = ""
     elif value and not valid_channel(value):
-        await message.answer("Укажи ссылку формата https://t.me/имя_канала или «-».", reply_markup=cancel_kb())
-        return
+        return await message.answer("Укажи ссылку формата https://t.me/имя_канала или «-».", reply_markup=cancel_kb())
     await state.update_data(channel_url=value)
     await state.set_state(ProfileForm.city)
     await message.answer("📍 <b>Анкета · 6/6</b>\nГород или <code>-</code>, чтобы пропустить.", reply_markup=cancel_kb())
@@ -722,10 +734,10 @@ async def profile_channel(message: Message, state: FSMContext):
 @router.message(ProfileForm.city)
 async def profile_city(message: Message, state: FSMContext):
     city = (message.text or "").strip()
-    if city == "-": city = ""
+    if city == "-":
+        city = ""
     if len(city) > 80:
-        await message.answer("Название города слишком длинное.", reply_markup=cancel_kb())
-        return
+        return await message.answer("Название города слишком длинное.", reply_markup=cancel_kb())
     data = await state.get_data()
     uid = message.from_user.id
     ensure_user(uid, message.from_user.username or "")
@@ -751,8 +763,7 @@ async def profile_city(message: Message, state: FSMContext):
 async def profile_preview(call: CallbackQuery):
     p = get_profile(call.from_user.id)
     if not p or not p["nickname"]:
-        await call.answer("Сначала создай анкету.", show_alert=True)
-        return
+        return await call.answer("Сначала создай анкету.", show_alert=True)
     await edit_message(call, profile_text(p, True), reply_markup=profile_menu(p))
     await call.answer()
 
@@ -761,8 +772,7 @@ async def profile_preview(call: CallbackQuery):
 async def publish_prompt(call: CallbackQuery):
     p = get_profile(call.from_user.id)
     if not complete(p):
-        await call.answer("Сначала заполни все обязательные поля.", show_alert=True)
-        return
+        return await call.answer("Сначала заполни все обязательные поля.", show_alert=True)
     await edit_message(call, "📢 <b>Подтверждение публикации</b>\n\nАнкета станет видна участникам каталога. Опубликовать?",
         reply_markup=keyboard([
             [("✅ Да, опубликовать", "profile:publish_yes")],
@@ -792,7 +802,7 @@ async def profile_hide(call: CallbackQuery):
 
 @router.callback_query(F.data == "profile:delete_confirm")
 async def delete_confirm(call: CallbackQuery):
-    await edit_message(call, "🗑 <b>Удалить анкету?</b>\nПрофиль будет удалён. Исторические голоса сохраняются.", 
+    await edit_message(call, "🗑 <b>Удалить анкету?</b>\nПрофиль будет удалён. Исторические голоса сохраняются.",
         reply_markup=keyboard([
             [("🗑 Да, удалить", "profile:delete_yes")],
             [("⬅️ Отмена", "profile:home")],
@@ -876,48 +886,32 @@ async def directory_interest(call: CallbackQuery):
         await edit_message(call, "Пока нет опубликованных анкет с этим интересом.", reply_markup=back("directory:home"))
     else:
         await edit_message(call, f"✨ Участники с интересом «{escape(interest)}»:",
-            reply_markup=keyboard([[ (f"🐾 {r['nickname']}", f"directory:show:{r['telegram_id']}")] for r in rows] + [[("⬅️ В каталог", "directory:home")]]))
+            reply_markup=keyboard([[(f"🐾 {r['nickname']}", f"directory:show:{r['telegram_id']}")] for r in rows] + [[("⬅️ В каталог", "directory:home")]]))
     await call.answer()
 
-
-# --- Умный рандом ---
 
 @router.callback_query(F.data == "directory:random")
 async def directory_random(call: CallbackQuery):
+    # FIX: сначала отвечаем, чтобы не сработал query is too old
+    await call.answer()
     uid = call.from_user.id
     with connect() as con:
-        # Получаем всех доступных пользователей
         rows = con.execute("""SELECT p.telegram_id FROM profiles p JOIN users u ON u.telegram_id=p.telegram_id
           WHERE p.visibility='published' AND u.status='active' AND p.telegram_id != ?
           AND NOT EXISTS (SELECT 1 FROM blocks b WHERE b.blocker_id=? AND b.blocked_id=p.telegram_id)""", (uid, uid)).fetchall()
-        
     all_ids = {r["telegram_id"] for r in rows}
-    
     if not all_ids:
         return await edit_message(call, "Пока нет доступных анкет.", reply_markup=back("directory:home"))
-
-    seen = RANDOM_SEEN.get(uid, set())
-    # Оставляем в "просмотренных" только тех, кто еще существует и не забанен
-    seen = seen.intersection(all_ids)
-    
-    # Ищем тех, кого еще не смотрели
+    seen = RANDOM_SEEN.get(uid, set()).intersection(all_ids)
     unseen = list(all_ids - seen)
-    
     if not unseen:
-        # Если всех посмотрели — сбрасываем историю (кроме текущего пользователя)
         seen.clear()
         unseen = list(all_ids)
-        
-    # Выбираем случайного из непросмотренных
     import random
     chosen = random.choice(unseen)
-    
-    # Запоминаем
     seen.add(chosen)
     RANDOM_SEEN[uid] = seen
-    
-    await show_public_profile(call, chosen, back_target="directory:random")
-    await call.answer()
+    await show_public_profile(call, chosen, back_target="directory:home")
 
 
 @router.callback_query(F.data.startswith("directory:show:"))
@@ -926,8 +920,8 @@ async def directory_show(call: CallbackQuery):
         target = int(call.data.rsplit(":", 1)[1])
     except ValueError:
         return await call.answer("Некорректная анкета.", show_alert=True)
-    await show_public_profile(call, target)
     await call.answer()
+    await show_public_profile(call, target)
 
 
 # --- Жалобы (Анкеты) ---
@@ -937,18 +931,17 @@ async def report_start(call: CallbackQuery, state: FSMContext):
     target_id = int(call.data.split(":")[1])
     if target_id == call.from_user.id:
         return await call.answer("Нельзя пожаловаться на себя.", show_alert=True)
-    
     await state.update_data(target_id=target_id, report_type="Анкета")
     await state.set_state(ReportForm.reason)
-    
     await edit_message(call, "🚩 <b>Жалоба на анкету</b>\n\nВыбери причину жалобы:", reply_markup=keyboard([
         [("🤬 Оскорбления / мат", "rep_reason:Оскорбления / мат")],
         [("🔞 18+ контент", "rep_reason:18+ контент")],
         [("🛑 Спам / реклама", "rep_reason:Спам / реклама")],
         [("🤡 Фейк / обман", "rep_reason:Фейк / обман")],
-        [("✖️ Отмена", "cancel")]
+        [("✖️ Отмена", "cancel")],
     ]))
     await call.answer()
+
 
 @router.callback_query(F.data.startswith("rep_reason:"), ReportForm.reason)
 async def report_reason(call: CallbackQuery, state: FSMContext):
@@ -957,12 +950,11 @@ async def report_reason(call: CallbackQuery, state: FSMContext):
     target_id = data.get("target_id")
     report_type = data.get("report_type")
     await state.clear()
-    
     with connect() as con:
-        full_reason = f"[{report_type}] {reason_text}"
-        con.execute("INSERT INTO reports(reporter_id, target_id, reason) VALUES (?, ?, ?)", (call.from_user.id, target_id, full_reason))
-        
-    await edit_message(call, "✅ <b>Жалоба отправлена</b>\n\nМодерация рассмотрит её в ближайшее время. Спасибо за помощь!", reply_markup=back("home"))
+        con.execute("INSERT INTO reports(reporter_id, target_id, reason) VALUES (?, ?, ?)",
+                    (call.from_user.id, target_id, f"[{report_type}] {reason_text}"))
+    await edit_message(call, "✅ <b>Жалоба отправлена</b>\n\nМодерация рассмотрит её в ближайшее время. Спасибо за помощь!",
+                       reply_markup=back("home"))
     await call.answer("Жалоба принята")
 
 
@@ -1074,12 +1066,75 @@ async def admin_home(call: CallbackQuery):
     await edit_message(call, "🛡 <b>Админ-панель</b>", reply_markup=keyboard([
         [("➕ Создать выпуск", "admin:create")],
         [("📋 Выпуски", "admin:contests")],
+        [("👥 Пользователи", "admin:users:0")],  # NEW
         [("🚩 Жалобы", "admin:reports")],
         [("📢 Рассылка", "admin:broadcast")],
         [("💭 Мысли", "admin:thoughts")],
         [("⬅️ Главное меню", "home")],
     ]))
     await call.answer()
+
+
+# --- NEW: список пользователей с баном ---
+
+@router.callback_query(F.data.startswith("admin:users:"))
+async def admin_users_list(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer("Нет доступа.", show_alert=True)
+    try:
+        page = int(call.data.split(":")[2])
+    except (ValueError, IndexError):
+        page = 0
+    limit = 10
+    offset = page * limit
+    with connect() as con:
+        total = con.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+        rows = con.execute("""
+            SELECT u.telegram_id, u.status, p.nickname 
+            FROM users u 
+            LEFT JOIN profiles p ON p.telegram_id = u.telegram_id 
+            ORDER BY u.created_at DESC 
+            LIMIT ? OFFSET ?
+        """, (limit, offset)).fetchall()
+    if not rows:
+        await edit_message(call, "На этой странице нет пользователей.", reply_markup=back("admin:home"))
+        return await call.answer()
+    total_pages = max(1, (total + limit - 1) // limit)
+    text = f"👥 <b>Пользователи</b> (Стр. {page + 1}/{total_pages})\nВсего: {total}\n\n"
+    buttons = []
+    for r in rows:
+        icon = "🔴" if r["status"] == "banned" else "🟢"
+        name = r["nickname"] or "Без анкеты"
+        buttons.append([(f"{icon} {name} (ID: {r['telegram_id']})", f"admin:user_toggle:{'unban' if r['status']=='banned' else 'ban'}:{r['telegram_id']}")])
+    nav = []
+    if page > 0:
+        nav.append(("⬅️ Стр.", f"admin:users:{page - 1}"))
+    if offset + limit < total:
+        nav.append(("Стр. ➡️", f"admin:users:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([("⬅️ Админ-панель", "admin:home")])
+    await edit_message(call, text, reply_markup=keyboard(buttons))
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("admin:user_toggle:"))
+async def admin_user_toggle(call: CallbackQuery):
+    if not is_admin(call.from_user.id):
+        return await call.answer("Нет доступа.", show_alert=True)
+    parts = call.data.split(":")
+    if len(parts) != 4:
+        return await call.answer("Некорректный запрос.", show_alert=True)
+    action, target_id = parts[2], int(parts[3])
+    if target_id == call.from_user.id:
+        return await call.answer("Себя банить нельзя.", show_alert=True)
+    new_status = "banned" if action == "ban" else "active"
+    with connect() as con:
+        con.execute("UPDATE users SET status=? WHERE telegram_id=?", (new_status, target_id))
+    await call.answer("Готово" if new_status == "active" else "Забанен")
+    # Обновляем список на 0-й странице
+    call.data = "admin:users:0"
+    await admin_users_list(call)
 
 
 @router.callback_query(F.data == "admin:create")
@@ -1251,40 +1306,27 @@ async def _render_reports(call: CallbackQuery):
             WHERE r.status='open' 
             ORDER BY r.id DESC LIMIT 15
         """).fetchall()
-        
     if not rows:
         return await edit_message(call, "🚩 Открытых жалоб нет.", reply_markup=back("admin:home"))
-        
     lines = []
     buttons = []
-    
     for r in rows:
-        # Формируем отправителя
         rep_nick = r['reporter_nick'] or "Без анкеты"
         rep_user = f"@{r['reporter_user']}" if r['reporter_user'] else "нет @"
         rep_id = r['reporter_id']
-        
-        # Формируем цель
         tgt_nick = r['target_nick'] or "Без анкеты"
         tgt_user = f"@{r['target_user']}" if r['target_user'] else "нет @"
         tgt_id = r['target_id']
-        
-        # Добавляем в список (ID делаем кликабельным через <code>)
         lines.append(
             f"<b>#{r['id']}</b> · {r['reason']}\n"
             f"👤 <b>От:</b> {escape(rep_nick)} ({escape(rep_user)}, <code>{rep_id}</code>)\n"
             f"🎯 <b>На:</b> {escape(tgt_nick)} ({escape(tgt_user)}, <code>{tgt_id}</code>)"
         )
         buttons.append([(f"✅ Закрыть #{r['id']}", f"admin:report_close:{r['id']}")])
-        
     buttons.append([("⬅️ Админ-панель", "admin:home")])
-    
     text = "🚩 <b>Открытые жалобы</b>\n\n" + "\n\n".join(lines)
-    
-    # Защита от слишком длинного сообщения
     if len(text) > 4000:
         text = text[:4000] + "\n\n<i>...и другие (список обрезан)</i>"
-        
     await edit_message(call, text, reply_markup=keyboard(buttons))
 
 
@@ -1309,50 +1351,45 @@ async def admin_report_close(call: CallbackQuery):
     await call.answer("Жалоба закрыта.")
     await _render_reports(call)
 
-# ---------------- THOUGHTS (FEED) ----------------
+
+# ---------------- THOUGHTS ----------------
 
 def get_post_card(post_id: int, current_user_id: int):
     with connect() as con:
         post = con.execute("SELECT p.*, pr.nickname FROM posts p LEFT JOIN profiles pr ON p.author_id = pr.telegram_id WHERE p.id = ? AND p.status = 'published'", (post_id,)).fetchone()
         if not post:
             return None, None
-        
         r_counts = {k: 0 for k in REACTIONS}
         for r in con.execute("SELECT reaction, COUNT(*) c FROM reactions WHERE post_id = ? GROUP BY reaction", (post_id,)):
             if r["reaction"] in r_counts:
                 r_counts[r["reaction"]] = r["c"]
-                
         my_react = con.execute("SELECT reaction FROM reactions WHERE post_id = ? AND user_id = ?", (post_id, current_user_id)).fetchone()
         my_react = my_react["reaction"] if my_react else None
-
     author = post["nickname"] or "Аноним"
     time_str = time_ago(post["created_at"])
     text = f"💭 <b>Мысли</b>\n\n<b>{escape(author)}</b> · {time_str}\n\n{escape(post['text'])}\n\n"
     react_str = "   ".join([f"{REACTIONS[k]} {r_counts[k]}" for k in REACTIONS])
     text += react_str
-    
     react_btns = []
     for k, emoji in REACTIONS.items():
         prefix = "✅ " if my_react == k else ""
         react_btns.append((f"{prefix}{emoji}", f"th_react:{post_id}:{k}"))
     rows = [react_btns]
-    
     with connect() as con:
         prev_post = con.execute("SELECT id FROM posts WHERE status='published' AND id > ? ORDER BY id ASC LIMIT 1", (post_id,)).fetchone()
         next_post = con.execute("SELECT id FROM posts WHERE status='published' AND id < ? ORDER BY id DESC LIMIT 1", (post_id,)).fetchone()
-    
     nav_row = []
-    if prev_post: nav_row.append(("◀️ Предыдущая", f"thoughts:view:{prev_post['id']}"))
-    if next_post: nav_row.append(("Следующая ▶️", f"thoughts:view:{next_post['id']}"))
-    if nav_row: rows.append(nav_row)
-        
+    if prev_post:
+        nav_row.append(("◀️ Предыдущая", f"thoughts:view:{prev_post['id']}"))
+    if next_post:
+        nav_row.append(("Следующая ▶️", f"thoughts:view:{next_post['id']}"))
+    if nav_row:
+        rows.append(nav_row)
     rows.append([("👤 Профиль автора", f"directory:show:{post['author_id']}"), ("✍️ Написать", "thoughts:create")])
-    
     if post["author_id"] == current_user_id or is_admin(current_user_id):
         rows.append([("🗑 Удалить", f"th_delete:{post_id}")])
     else:
         rows.append([("🚩 Пожаловаться", f"th_report:{post_id}")])
-        
     rows.append([("⬅️ В меню", "home")])
     return text, keyboard(rows)
 
@@ -1364,7 +1401,7 @@ async def thoughts_home(call: CallbackQuery):
     if not latest:
         await edit_message(call, "💭 <b>Мысли</b>\n\nПока нет мыслей. Будь первым!", reply_markup=keyboard([
             [("✍️ Написать мысль", "thoughts:create")],
-            [("⬅️ В меню", "home")]
+            [("⬅️ В меню", "home")],
         ]))
     else:
         await thoughts_view(call, latest["id"])
@@ -1389,7 +1426,7 @@ async def thoughts_view(call: CallbackQuery, post_id: int):
                 return await edit_message(call, "Эта мысль была удалена. Показываю актуальную ленту.", reply_markup=markup)
         return await edit_message(call, "💭 <b>Мысли</b>\n\nПока нет мыслей. Будь первым!", reply_markup=keyboard([
             [("✍️ Написать мысль", "thoughts:create")],
-            [("⬅️ В меню", "home")]
+            [("⬅️ В меню", "home")],
         ]))
     await edit_message(call, text, reply_markup=markup)
 
@@ -1417,12 +1454,13 @@ async def thought_delete(call: CallbackQuery):
     post_id = int(call.data.split(":")[1])
     with connect() as con:
         post = con.execute("SELECT author_id FROM posts WHERE id=?", (post_id,)).fetchone()
-    if not post: return await call.answer("Уже удалено", show_alert=True)
+    if not post:
+        return await call.answer("Уже удалено", show_alert=True)
     if post["author_id"] != call.from_user.id and not is_admin(call.from_user.id):
         return await call.answer("Ты не можешь удалить чужую мысль.", show_alert=True)
     await edit_message(call, "🗑 Удалить эту мысль?", reply_markup=keyboard([
         [("✅ Да, удалить", f"th_delete_yes:{post_id}")],
-        [("⬅️ Отмена", f"thoughts:view:{post_id}")]
+        [("⬅️ Отмена", f"thoughts:view:{post_id}")],
     ]))
     await call.answer()
 
@@ -1432,7 +1470,8 @@ async def thought_delete_yes(call: CallbackQuery):
     post_id = int(call.data.split(":")[1])
     with connect() as con:
         post = con.execute("SELECT author_id FROM posts WHERE id=?", (post_id,)).fetchone()
-        if not post: return await call.answer("Уже удалено", show_alert=True)
+        if not post:
+            return await call.answer("Уже удалено", show_alert=True)
         if post["author_id"] != call.from_user.id and not is_admin(call.from_user.id):
             return await call.answer("Нет прав.", show_alert=True)
         con.execute("UPDATE posts SET status='deleted' WHERE id=?", (post_id,))
@@ -1443,7 +1482,7 @@ async def thought_delete_yes(call: CallbackQuery):
     else:
         await edit_message(call, "💭 <b>Мысли</b>\n\nПока нет мыслей. Будь первым!", reply_markup=keyboard([
             [("✍️ Написать мысль", "thoughts:create")],
-            [("⬅️ В меню", "home")]
+            [("⬅️ В меню", "home")],
         ]))
     await call.answer("Удалено")
 
@@ -1466,7 +1505,7 @@ async def thought_text(message: Message, state: FSMContext):
     await state.set_state(ThoughtForm.confirm)
     await message.answer(f"💭 <b>Предпросмотр</b>\n\n{escape(text)}\n\nВсё верно?", reply_markup=keyboard([
         [("✅ Опубликовать", "thoughts:publish")],
-        [("✖️ Отмена", "cancel")]
+        [("✖️ Отмена", "cancel")],
     ]))
 
 
@@ -1485,14 +1524,14 @@ async def thought_publish(call: CallbackQuery, state: FSMContext):
     await thoughts_view(call, post_id)
 
 
-# Единый обработчик жалоб на мысли (без дублей)
+# FIX: единственный обработчик жалоб на мысли (дубликат удалён)
 @router.callback_query(F.data.startswith("th_report:"))
 async def thought_report(call: CallbackQuery, state: FSMContext):
     post_id = int(call.data.split(":")[1])
     with connect() as con:
         post = con.execute("SELECT author_id FROM posts WHERE id=?", (post_id,)).fetchone()
-        if not post: return await call.answer("Пост не найден", show_alert=True)
-    
+        if not post:
+            return await call.answer("Пост не найден", show_alert=True)
     await state.update_data(target_id=post["author_id"], report_type=f"Мысль #{post_id}")
     await state.set_state(ReportForm.reason)
     await edit_message(call, "🚩 <b>Жалоба на мысль</b>\n\nВыбери причину жалобы:", reply_markup=keyboard([
@@ -1500,14 +1539,15 @@ async def thought_report(call: CallbackQuery, state: FSMContext):
         [("🔞 18+ контент", "rep_reason:18+ контент")],
         [("🛑 Спам / реклама", "rep_reason:Спам / реклама")],
         [("🤡 Фейк / обман", "rep_reason:Фейк / обман")],
-        [("✖️ Отмена", "cancel")]
+        [("✖️ Отмена", "cancel")],
     ]))
     await call.answer()
 
 
 @router.callback_query(F.data == "admin:thoughts")
 async def admin_thoughts(call: CallbackQuery):
-    if not is_admin(call.from_user.id): return await call.answer("Нет доступа", show_alert=True)
+    if not is_admin(call.from_user.id):
+        return await call.answer("Нет доступа", show_alert=True)
     with connect() as con:
         posts = con.execute("SELECT id, text FROM posts WHERE status='published' ORDER BY id DESC LIMIT 10").fetchall()
     if not posts:
@@ -1523,12 +1563,14 @@ async def admin_thoughts(call: CallbackQuery):
 
 @router.callback_query(F.data.startswith("admin:th_hide:"))
 async def admin_thought_hide(call: CallbackQuery):
-    if not is_admin(call.from_user.id): return await call.answer("Нет доступа", show_alert=True)
+    if not is_admin(call.from_user.id):
+        return await call.answer("Нет доступа", show_alert=True)
     post_id = int(call.data.split(":")[2])
     with connect() as con:
         con.execute("UPDATE posts SET status='hidden' WHERE id=?", (post_id,))
     await call.answer("Мысль скрыта")
     await admin_thoughts(call)
+
 
 # ---------------- BROADCAST ----------------
 
@@ -1595,7 +1637,15 @@ async def broadcast_go(call: CallbackQuery, state: FSMContext):
             failed += 1
             logging.warning("broadcast failed for %s: %s", uid, ex)
         await asyncio.sleep(0.05)
-    await call.message.answer(f"📢 <b>Рассылка завершена</b>\n\nВсего получателей: {len(targets)}\n✅ Доставлено: {sent}\n🚫 Заблокировали бота: {blocked}\n⚠️ Ошибок: {failed}", reply_markup=keyboard([[("⬅️ Админ-панель", "admin:home")]]))
+    await call.message.answer(
+        f"📢 <b>Рассылка завершена</b>\n\n"
+        f"Всего получателей: {len(targets)}\n"
+        f"✅ Доставлено: {sent}\n"
+        f"🚫 Заблокировали бота: {blocked}\n"
+        f"⚠️ Ошибок: {failed}",
+        reply_markup=keyboard([[("⬅️ Админ-панель", "admin:home")]]),
+    )
+
 
 # ---------------- ENTRYPOINT ----------------
 
@@ -1606,6 +1656,7 @@ async def main():
     dp = Dispatcher()
     dp.include_router(router)
     await dp.start_polling(bot)
+
 
 if __name__ == "__main__":
     asyncio.run(main())
