@@ -1227,16 +1227,34 @@ async def _render_reports(call: CallbackQuery):
         
     lines = []
     buttons = []
+    
     for r in rows:
-        rep_name = r['reporter_nick'] or (f"@{r['reporter_user']}" if r['reporter_user'] else f"ID {r['reporter_id']}")
-        tgt_name = r['target_nick'] or (f"@{r['target_user']}" if r['target_user'] else f"ID {r['target_id']}")
-        lines.append(f"<b>#{r['id']}</b> · {r['reason']}\n👤 От: {escape(rep_name)} → На: {escape(tgt_name)}")
+        # Формируем отправителя
+        rep_nick = r['reporter_nick'] or "Без анкеты"
+        rep_user = f"@{r['reporter_user']}" if r['reporter_user'] else "нет @"
+        rep_id = r['reporter_id']
+        
+        # Формируем цель
+        tgt_nick = r['target_nick'] or "Без анкеты"
+        tgt_user = f"@{r['target_user']}" if r['target_user'] else "нет @"
+        tgt_id = r['target_id']
+        
+        # Добавляем в список (ID делаем кликабельным через <code>)
+        lines.append(
+            f"<b>#{r['id']}</b> · {r['reason']}\n"
+            f"👤 <b>От:</b> {escape(rep_nick)} ({escape(rep_user)}, <code>{rep_id}</code>)\n"
+            f"🎯 <b>На:</b> {escape(tgt_nick)} ({escape(tgt_user)}, <code>{tgt_id}</code>)"
+        )
         buttons.append([(f"✅ Закрыть #{r['id']}", f"admin:report_close:{r['id']}")])
         
     buttons.append([("⬅️ Админ-панель", "admin:home")])
+    
     text = "🚩 <b>Открытые жалобы</b>\n\n" + "\n\n".join(lines)
+    
+    # Защита от слишком длинного сообщения
     if len(text) > 4000:
         text = text[:4000] + "\n\n<i>...и другие (список обрезан)</i>"
+        
     await edit_message(call, text, reply_markup=keyboard(buttons))
 
 
